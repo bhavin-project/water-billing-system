@@ -1,136 +1,145 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
-import { getReceipt } from '../api/api';
-import { formatCurrency, formatDate } from '../utils/helpers';
-import { useReactToPrint } from 'react-to-print';
+import React, { forwardRef } from 'react';
+import { amountToWords } from '../utils/numberToWords';
+import './Receipt.css';
 
-const Receipt = () => {
-  const { paymentId } = useParams();
-  const [receipt, setReceipt] = useState(null);
-  const printRef = useRef();
+const Receipt = forwardRef(({ payments, quarterLabel }, ref) => {
+    if (!payments || payments.length === 0) return null;
 
-  useEffect(() => {
-    loadReceipt();
-  }, [paymentId]);
-
-  const loadReceipt = async () => {
-    try {
-      const res = await getReceipt(paymentId);
-      setReceipt(res.data);
-    } catch (err) {
-      console.error(err);
+    // Split payments into groups of 3 for 3-per-page printing
+    const triplets = [];
+    for (let i = 0; i < payments.length; i += 3) {
+        triplets.push(payments.slice(i, i + 3));
     }
-  };
 
-  const handlePrint = useReactToPrint({
-    content: () => printRef.current,
-  });
+    return (
+        <div ref={ref} className="receipt-print-container">
+            {triplets.map((group, pageIndex) => (
+                <div key={pageIndex} className="receipt-page">
+                    {group.map((payment, index) => {
+                        const bill = payment.bill || {};
+                        const unitNumber =
+                            bill.unit?.unitNumber ||
+                            bill.meterReading?.unit?.unitNumber ||
+                            bill.unitNumber ||
+                            payment.unitNumber ||
+                            '____';
 
-  if (!receipt) return <div className="text-center mt-5"><div className="spinner-border"></div></div>;
+                        const payAmount = Number(
+                            payment.amount ??
+                            payment.amountPaid ??
+                            payment.amount_paid ??
+                            bill.amountPaid ??
+                            0
+                        );
 
-  return (
-    <div>
-      <div className="d-flex justify-content-between mb-3">
-        <h2><i className="bi bi-receipt me-2"></i>Payment Receipt</h2>
-        <button className="btn btn-primary" onClick={handlePrint}>
-          <i className="bi bi-printer me-1"></i> Print Receipt
-        </button>
-      </div>
+                        let formattedDate = '';
+                        if (payment.paymentDate) {
+                            const parts = String(payment.paymentDate).split('-');
+                            formattedDate =
+                                parts.length === 3
+                                    ? `${parts[2]}/${parts[1]}/${parts[0]}`
+                                    : payment.paymentDate;
+                        } else {
+                            const today = new Date();
+                            formattedDate = `${String(today.getDate()).padStart(2, '0')}/${String(
+                                today.getMonth() + 1
+                            ).padStart(2, '0')}/${today.getFullYear()}`;
+                        }
 
-      <div ref={printRef} className="card" style={{ maxWidth: '700px', margin: '0 auto' }}>
-        <div className="card-body p-4">
-          <div className="text-center border-bottom pb-3 mb-3">
-            <h3 className="mb-1">{receipt.societyName || 'Society Water Billing'}</h3>
-            <p className="text-muted mb-0">Water Bill Payment Receipt</p>
-          </div>
+                        return (
+                            <div key={payment.id || `${pageIndex}-${index}`} className="receipt-box">
+                                <div className="receipt-header">
+                                    <h2 className="society-title">
+                                        Silicone Vally Co-Op. Housing Service Society Ltd.
+                                    </h2>
+                                    <p className="reg-no">
+                                        Redg. No. NDHN / GNR / 6614 / 2012 Dt. 27-03-2012
+                                    </p>
+                                    <p className="address">
+                                        Block No. 132, Opp. Vasant Bahar Flat, Kudasan, Gandhinagar - 382419
+                                    </p>
+                                </div>
 
-          <div className="row mb-3">
-            <div className="col-6">
-              <strong>Receipt No:</strong> {receipt.receiptNumber}
-            </div>
-            <div className="col-6 text-end">
-              <strong>Date:</strong> {formatDate(receipt.paymentDate)}
-            </div>
-          </div>
+                                <div className="receipt-meta-row">
+                                    <div className="receipt-no">
+                                        Receipt No.{' '}
+                                        <span className="receipt-no-val">
+                                            {payment.receiptNumber || '_____'}
+                                        </span>
+                                    </div>
+                                    <div className="receipt-badge">RECEIPT</div>
+                                    <div className="receipt-date">
+                                        Date :{' '}
+                                        <span className="underline-val handwritten-val">
+                                            {formattedDate}
+                                        </span>
+                                    </div>
+                                </div>
 
-          <div className="border p-3 mb-3 bg-light">
-            <div className="row">
-              <div className="col-6">
-                <p><strong>Unit No:</strong> {receipt.unitNumber}</p>
-                <p><strong>Block:</strong> {receipt.blockName}</p>
-                <p className="mb-0"><strong>Owner:</strong> {receipt.ownerName}</p>
-              </div>
-              <div className="col-6">
-                <p><strong>Bill No:</strong> {receipt.billNumber}</p>
-                <p><strong>Quarter:</strong> {receipt.quarterLabel}</p>
-                <p className="mb-0"><strong>Payment:</strong> {receipt.paymentMode}
-                  {receipt.transactionNumber && ` (${receipt.transactionNumber})`}
-                </p>
-              </div>
-            </div>
-          </div>
+                                <div className="receipt-body">
+                                    <div className="line-row">
+                                        <span>Received with thanks from Shri</span>
+                                        <span className="line-fill"></span>
+                                    </div>
 
-          <table className="table table-bordered mb-3">
-            <tbody>
-              <tr>
-                <td>Previous Reading</td>
-                <td className="text-end">{receipt.previousReading}</td>
-              </tr>
-              <tr>
-                <td>Current Reading</td>
-                <td className="text-end">{receipt.currentReading}</td>
-              </tr>
-              <tr>
-                <td>Units Consumed</td>
-                <td className="text-end"><strong>{receipt.unitsConsumed}</strong></td>
-              </tr>
-              <tr>
-                <td>Rate per Unit</td>
-                <td className="text-end">{formatCurrency(receipt.ratePerUnit)}</td>
-              </tr>
-              <tr>
-                <td>Bill Amount</td>
-                <td className="text-end">{formatCurrency(receipt.totalBillAmount)}</td>
-              </tr>
-              <tr>
-                <td>Previous Balance</td>
-                <td className="text-end">{formatCurrency(receipt.previousBalance)}</td>
-              </tr>
-              <tr className="table-primary">
-                <td><strong>Net Amount</strong></td>
-                <td className="text-end"><strong>{formatCurrency(receipt.netAmount)}</strong></td>
-              </tr>
-              <tr className="table-success">
-                <td><strong>Amount Paid (This Payment)</strong></td>
-                <td className="text-end"><strong>{formatCurrency(receipt.amountPaid)}</strong></td>
-              </tr>
-              <tr>
-                <td>Total Paid So Far</td>
-                <td className="text-end">{formatCurrency(receipt.totalPaidSoFar)}</td>
-              </tr>
-              <tr className={parseFloat(receipt.balanceAmount) > 0 ? 'table-danger' : 'table-success'}>
-                <td><strong>Balance Amount</strong></td>
-                <td className="text-end"><strong>{formatCurrency(receipt.balanceAmount)}</strong></td>
-              </tr>
-            </tbody>
-          </table>
+                                    <div className="line-row">
+                                        <span>Flat / Shop No.</span>
+                                        <span className="underline-val handwritten-val">{unitNumber}</span>
+                                        <span>against AMC /</span>
+                                        <span className="water-bill-check">✓ Water Bill</span>
+                                        <span>/ Sale of Scrap / Rent of Office</span>
+                                    </div>
 
-          <div className="row mt-5">
-            <div className="col-6">
-              <p className="border-top pt-2">Received By</p>
-            </div>
-            <div className="col-6 text-end">
-              <p className="border-top pt-2">Resident Signature</p>
-            </div>
-          </div>
+                                    <div className="line-row">
+                                        <span>Equipment for the year / Month</span>
+                                        <span className="underline-val handwritten-val">
+                                            {quarterLabel || ''}
+                                        </span>
+                                    </div>
 
-          <div className="text-center text-muted mt-3">
-            <small>This is a computer-generated receipt</small>
-          </div>
+                                    <div className="line-row">
+                                        <span>sum of rupees</span>
+                                        <span className="line-fill handwritten-val">
+                                            {amountToWords(payAmount)}
+                                        </span>
+                                    </div>
+
+                                    <div className="line-row">
+                                        <span>By Cash / Cheque No. / UPI Tr. No.</span>
+                                        <span
+                                            className="line-fill handwritten-val"
+                                            style={{ maxWidth: '220px' }}
+                                        >
+                                            {payment.remarks || payment.paymentMode || ''}
+                                        </span>
+                                        <span style={{ marginLeft: '6px' }}>Bank</span>
+                                        <span className="line-fill"></span>
+                                    </div>
+                                </div>
+
+                                <div className="receipt-footer">
+                                    <div className="amount-box-container">
+                                        <div className="amount-box">
+                                            <div className="rupee-sym">₹</div>
+                                            <div className="amount-num">{payAmount}/-</div>
+                                        </div>
+                                        <div className="cheque-note">
+                                            Cheque is subject to Realisation.
+                                        </div>
+                                    </div>
+
+                                    <div className="sig-container">
+                                        <div className="sig-box"></div>
+                                        <div className="sig-title">Authorised Signatory</div>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            ))}
         </div>
-      </div>
-    </div>
-  );
-};
+    );
+});
 
 export default Receipt;

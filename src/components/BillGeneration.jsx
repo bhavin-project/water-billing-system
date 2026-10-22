@@ -1,211 +1,390 @@
-import React, { useState, useEffect } from 'react';
-import { getQuarters, getBlocks, generateBills, getBillsByQuarter, getBillsByQuarterAndBlock, getBillsByQuarterAndStatus } from '../api/api';
-import { toast } from 'react-toastify';
-import { formatCurrency, getStatusBadge, formatDate } from '../utils/helpers';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import api from '../api/api';
+import Receipt from './Receipt';
 
-const BillGeneration = () => {
-  const [quarters, setQuarters] = useState([]);
-  const [blocks, setBlocks] = useState([]);
-  const [selectedQuarter, setSelectedQuarter] = useState('');
-  const [selectedBlock, setSelectedBlock] = useState('all');
-  const [selectedStatus, setSelectedStatus] = useState('all');
-  const [bills, setBills] = useState([]);
-  const [generating, setGenerating] = useState(false);
-  const navigate = useNavigate();
+function BillGeneration() {
+    const [quarters, setQuarters] = useState([]);
+    const [selectedQuarter, setSelectedQuarter] = useState(null);
+    const [bills, setBills] = useState([]);
+    const [payments, setPayments] = useState({});
+    const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    Promise.all([getQuarters(), getBlocks()]).then(([qRes, bRes]) => {
-      setQuarters(qRes.data);
-      setBlocks(bRes.data);
-    });
-  }, []);
+    // Print reference & state
+    const receiptRef = useRef();
+    const [printData, setPrintData] = useState([]);
 
-  const loadBills = async () => {
-    if (!selectedQuarter) return;
-    try {
-      let res;
-      if (selectedStatus !== 'all') {
-        res = await getBillsByQuarterAndStatus(selectedQuarter, selectedStatus);
-      } else if (selectedBlock !== 'all') {
-        const block = blocks.find(b => b.blockName === selectedBlock);
-        res = await getBillsByQuarterAndBlock(selectedQuarter, block.id);
-      } else {
-        res = await getBillsByQuarter(selectedQuarter);
-      }
-      setBills(res.data);
-    } catch (err) {
-      toast.error('Failed to load bills');
-    }
-  };
+    // Helpers to extract values safely with fallback logic
+    const getUnitNumber = (bill) => {
+        return bill?.unit?.unitNumber || bill?.meterReading?.unit?.unitNumber || bill?.unitNumber || `Unit #${bill?.id || ''}`;
+    };
 
-  useEffect(() => {
-    loadBills();
-  }, [selectedQuarter, selectedBlock, selectedStatus]);
+    const getUnitsConsumed = (bill) => {
+        return bill?.unitsConsumed ?? bill?.meterReading?.unitsConsumed ?? 0;
+    };
 
-  const handleGenerate = async () => {
-    if (!selectedQuarter) {
-      toast.warning('Please select a quarter');
-      return;
-    }
-    setGenerating(true);
-    try {
-      const res = await generateBills(selectedQuarter);
-      toast.success(res.data.message + ` (${res.data.count} bills)`);
-      loadBills();
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to generate bills');
-    } finally {
-      setGenerating(false);
-    }
-  };
+    const getWaterCharges = (bill) => {
+        if (bill?.waterCharges !== undefined && bill?.waterCharges !== null && bill?.waterCharges !== 0) return bill.waterCharges;
+        if (bill?.currentCharges !== undefined && bill?.currentCharges !== null && bill?.currentCharges !== 0) return bill.currentCharges;
+        if (bill?.billAmount !== undefined && bill?.billAmount !== null && bill?.billAmount !== 0) return bill.billAmount;
+        if (bill?.waterCharge !== undefined && bill?.waterCharge !== null && bill?.waterCharge !== 0) return bill.waterCharge;
+        if (bill?.amount !== undefined && bill?.amount !== null && bill?.amount !== 0) return bill.amount;
+        
+        // Fallback: calculate using units * rate (e.g. 5) if available
+        const units = getUnitsConsumed(bill);
+        return units * 5; 
+    };
 
-  const totalBilled = bills.reduce((sum, b) => sum + parseFloat(b.netAmount || 0), 0);
-  const totalPaid = bills.reduce((sum, b) => sum + parseFloat(b.amountPaid || 0), 0);
-  const totalOutstanding = bills.reduce((sum, b) => sum + parseFloat(b.balanceAmount > 0 ? b.balanceAmount : 0), 0);
+    const getPrevPending = (bill) => {
+        return bill?.previousPending ?? bill?.prevPending ?? bill?.pendingAmount ?? bill?.previousBalance ?? bill?.meterReading?.previousPending ?? 0;
+    };
 
-  return (
-    <div>
-      <h2 className="mb-4"><i className="bi bi-receipt me-2"></i>Bill Generation & Management</h2>
+    const getTotalDue = (bill) => {
+        if (bill?.totalDue !== undefined && bill?.totalDue !== null && bill?.totalDue !== 0) return bill.totalDue;
+        if (bill?.totalAmount !== undefined && bill?.totalAmount !== null && bill?.totalAmount !== 0) return bill.totalAmount;
+        if (bill?.netDue !== undefined && bill?.netDue !== null && bill?.netDue !== 0) return bill.netDue;
+        if (bill?.netAmount !== undefined && bill?.netAmount !== null && bill?.netAmount !== 0) return bill.netAmount;
+        
+        // Fallback calculation: Water Charges + Previous Pending
+        return getWaterCharges(bill) + getPrevPending(bill);
+    };
 
-      <div className="row mb-3">
-        <div className="col-md-3">
-          <label className="form-label">Quarter</label>
-          <select className="form-select" value={selectedQuarter}
-                  onChange={e => setSelectedQuarter(e.target.value)}>
-            <option value="">Select Quarter</option>
-            {quarters.map(q => (
-              <option key={q.id} value={q.id}>{q.label}</option>
-            ))}
-          </select>
-        </div>
-        <div className="col-md-2">
-          <label className="form-label">Block</label>
-          <select className="form-select" value={selectedBlock}
-                  onChange={e => setSelectedBlock(e.target.value)}>
-            <option value="all">All</option>
-            {blocks.map(b => (
-              <option key={b.id} value={b.blockName}>Block {b.blockName}</option>
-            ))}
-          </select>
-        </div>
-        <div className="col-md-2">
-          <label className="form-label">Status</label>
-          <select className="form-select" value={selectedStatus}
-                  onChange={e => setSelectedStatus(e.target.value)}>
-            <option value="all">All</option>
-            <option value="GENERATED">Generated</option>
-            <option value="PAID">Paid</option>
-            <option value="PARTIALLY_PAID">Partially Paid</option>
-            <option value="UNPAID">Unpaid</option>
-            <option value="OVERPAID">Overpaid</option>
-          </select>
-        </div>
-        <div className="col-md-3 d-flex align-items-end">
-          <button className="btn btn-primary me-2" onClick={handleGenerate}
-                  disabled={generating || !selectedQuarter}>
-            {generating ? <span className="spinner-border spinner-border-sm me-1"></span> : null}
-            <i className="bi bi-lightning me-1"></i> Generate Bills
-          </button>
-        </div>
-      </div>
+    const getAmountPaid = (bill) => {
+        return bill?.amountPaid ?? bill?.paidAmount ?? bill?.paid ?? 0;
+    };
 
-      {bills.length > 0 && (
-        <>
-          <div className="row mb-3">
-            <div className="col-md-3">
-              <div className="card bg-primary text-white">
-                <div className="card-body text-center">
-                  <small>Total Billed</small>
-                  <h5>{formatCurrency(totalBilled)}</h5>
+    // 1. Fetch quarters
+    useEffect(() => {
+        api.get('/meter-readings/quarters')
+            .then(res => {
+                if (res.data && res.data.length > 0) {
+                    setQuarters(res.data);
+                    const active = res.data.find(q => !q.closed) || res.data[0];
+                    setSelectedQuarter(active);
+                }
+            })
+            .catch(err => {
+                // Fallback attempt to /quarters endpoint
+                api.get('/quarters')
+                    .then(res => {
+                        if (res.data && res.data.length > 0) {
+                            setQuarters(res.data);
+                            setSelectedQuarter(res.data.find(q => !q.closed) || res.data[0]);
+                        }
+                    })
+                    .catch(e => console.error("Failed to load quarters", e));
+            });
+    }, []);
+
+    // 2. Fetch bills when quarter changes
+    useEffect(() => {
+        if (selectedQuarter) {
+            loadBills();
+        }
+    }, [selectedQuarter]);
+
+    const loadBills = () => {
+        setLoading(true);
+        api.get(`/bills/quarter/${selectedQuarter.id}`)
+            .then(res => {
+                const billList = res.data || [];
+                setBills(billList);
+                
+                // Initialize payment forms allowing user to edit freely
+                const initialForm = {};
+                billList.forEach(bill => {
+                    const totalDue = getTotalDue(bill);
+                    const amountPaid = getAmountPaid(bill);
+                    const balance = totalDue - amountPaid;
+                    
+                    initialForm[bill.id] = {
+                        amount: balance > 0 ? balance : 0,
+                        paymentMode: 'UPI',
+                        paymentDate: new Date().toISOString().split('T')[0],
+                        remarks: ''
+                    };
+                });
+                setPayments(initialForm);
+            })
+            .catch(err => console.error("Error loading bills", err))
+            .finally(() => setLoading(false));
+    };
+
+    const handleInputChange = (billId, field, value) => {
+        setPayments(prev => ({
+            ...prev,
+            [billId]: {
+                ...prev[billId],
+                [field]: value
+            }
+        }));
+    };
+
+    const saveSinglePayment = async (billId) => {
+        const payData = payments[billId];
+        if (!payData || parseFloat(payData.amount) <= 0) {
+            return alert("Please enter a valid amount to pay.");
+        }
+        try {
+            await api.post(`/payments/bill/${billId}`, {
+                amount: parseFloat(payData.amount),
+                paymentMode: payData.paymentMode,
+                paymentDate: payData.paymentDate,
+                remarks: payData.remarks
+            });
+            alert("Payment recorded successfully!");
+            loadBills();
+        } catch (err) {
+            console.error("Save payment error:", err);
+            alert("Failed to save payment.");
+        }
+    };
+
+    const saveAllPayments = async () => {
+        const bulkPayload = [];
+        bills.forEach(bill => {
+            const p = payments[bill.id];
+            if (p && parseFloat(p.amount) > 0) {
+                bulkPayload.push({
+                    billId: bill.id,
+                    payment: {
+                        amount: parseFloat(p.amount),
+                        paymentMode: p.paymentMode,
+                        paymentDate: p.paymentDate,
+                        remarks: p.remarks
+                    }
+                });
+            }
+        });
+
+        if (bulkPayload.length === 0) {
+            return alert("No payments entered to save.");
+        }
+
+        try {
+            try {
+                await api.post('/payments/bulk', bulkPayload);
+            } catch (bulkErr) {
+                // Fallback: post payments sequentially if bulk endpoint fails
+                for (let item of bulkPayload) {
+                    await api.post(`/payments/bill/${item.billId}`, item.payment);
+                }
+            }
+            alert(`Successfully saved ${bulkPayload.length} payments!`);
+            loadBills();
+        } catch (err) {
+            console.error("Bulk save error:", err);
+            alert("Failed to save payments.");
+        }
+    };
+
+    // Print receipt for individual unit
+    const handlePrintSingle = async (bill) => {
+        try {
+            const res = await api.get(`/payments/bill/${bill.id}`);
+            const list = res.data;
+            if (list && list.length > 0) {
+                const latestPayment = list[list.length - 1];
+                setPrintData([{ ...latestPayment, bill: bill }]);
+                setTimeout(() => window.print(), 300);
+            } else {
+                const p = payments[bill.id];
+                if (p && parseFloat(p.amount) > 0) {
+                    setPrintData([{
+                        amount: parseFloat(p.amount),
+                        paymentMode: p.paymentMode,
+                        paymentDate: p.paymentDate,
+                        remarks: p.remarks,
+                        receiptNumber: 'PENDING',
+                        bill: bill
+                    }]);
+                    setTimeout(() => window.print(), 300);
+                } else {
+                    alert("No payments recorded yet for " + getUnitNumber(bill));
+                }
+            }
+        } catch (err) {
+            console.error("Print fetch error", err);
+        }
+    };
+
+    // Print all receipts for selected quarter
+    const handlePrintAll = async () => {
+        try {
+            const allPayments = [];
+            for (let bill of bills) {
+                try {
+                    const res = await api.get(`/payments/bill/${bill.id}`);
+                    if (res.data && res.data.length > 0) {
+                        const latest = res.data[res.data.length - 1];
+                        allPayments.push({ ...latest, bill: bill });
+                    }
+                } catch (e) {
+                    // Ignore single bill fetch errors
+                }
+            }
+
+            if (allPayments.length === 0) {
+                return alert("No payments recorded for this quarter yet.");
+            }
+
+            setPrintData(allPayments);
+            setTimeout(() => window.print(), 400);
+        } catch (err) {
+            console.error("Print all error", err);
+        }
+    };
+
+    return (
+        <div className="container-fluid mt-3">
+            <div className="d-print-none">
+                <h2>Bill Generation & Payment Collection</h2>
+
+                {/* Quarter Selection Header */}
+                <div className="card p-3 my-3 shadow-sm">
+                    <div className="row align-items-end">
+                        <div className="col-md-4">
+                            <label className="form-label fw-bold">Select Quarter</label>
+                            <select 
+                                className="form-select"
+                                value={selectedQuarter?.id || ''}
+                                onChange={e => setSelectedQuarter(quarters.find(q => q.id === parseInt(e.target.value)))}
+                            >
+                                {quarters.map(q => (
+                                    <option key={q.id} value={q.id}>{q.label}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="col-md-8 text-end mt-3 mt-md-0">
+                            <button className="btn btn-primary me-2" onClick={saveAllPayments}>
+                                <i className="bi bi-check-all"></i> Save All Payments
+                            </button>
+                            <button className="btn btn-dark" onClick={handlePrintAll}>
+                                <i className="bi bi-printer"></i> Print All Receipts
+                            </button>
+                        </div>
+                    </div>
                 </div>
-              </div>
-            </div>
-            <div className="col-md-3">
-              <div className="card bg-success text-white">
-                <div className="card-body text-center">
-                  <small>Total Collected</small>
-                  <h5>{formatCurrency(totalPaid)}</h5>
-                </div>
-              </div>
-            </div>
-            <div className="col-md-3">
-              <div className="card bg-danger text-white">
-                <div className="card-body text-center">
-                  <small>Outstanding</small>
-                  <h5>{formatCurrency(totalOutstanding)}</h5>
-                </div>
-              </div>
-            </div>
-            <div className="col-md-3">
-              <div className="card bg-info text-white">
-                <div className="card-body text-center">
-                  <small>Bills Count</small>
-                  <h5>{bills.length}</h5>
-                </div>
-              </div>
-            </div>
-          </div>
 
-          <div className="table-responsive">
-            <table className="table table-striped table-hover table-bordered">
-              <thead className="table-dark">
-                <tr>
-                  <th>#</th>
-                  <th>Bill No.</th>
-                  <th>Unit</th>
-                  <th>Owner</th>
-                  <th>Prev Read</th>
-                  <th>Curr Read</th>
-                  <th>Units</th>
-                  <th>Rate</th>
-                  <th>Amount</th>
-                  <th>Prev Bal</th>
-                  <th>Net Amount</th>
-                  <th>Paid</th>
-                  <th>Balance</th>
-                  <th>Status</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bills.map((bill, idx) => (
-                  <tr key={bill.id}>
-                    <td>{idx + 1}</td>
-                    <td><small>{bill.billNumber}</small></td>
-                    <td><strong>{bill.unitNumber}</strong></td>
-                    <td>{bill.ownerName}</td>
-                    <td>{bill.previousReading}</td>
-                    <td>{bill.currentReading}</td>
-                    <td>{bill.unitsConsumed}</td>
-                    <td>{formatCurrency(bill.ratePerUnit)}</td>
-                    <td>{formatCurrency(bill.totalAmount)}</td>
-                    <td>{formatCurrency(bill.previousBalance)}</td>
-                    <td><strong>{formatCurrency(bill.netAmount)}</strong></td>
-                    <td className="text-success">{formatCurrency(bill.amountPaid)}</td>
-                    <td className={parseFloat(bill.balanceAmount) > 0 ? 'text-danger fw-bold' : 'text-success'}>
-                      {formatCurrency(bill.balanceAmount)}
-                    </td>
-                    <td>
-                      <span className={`badge ${getStatusBadge(bill.status)}`}>{bill.status}</span>
-                    </td>
-                    <td>
-                      {bill.status !== 'PAID' && bill.status !== 'OVERPAID' && (
-                        <button className="btn btn-sm btn-success"
-                                onClick={() => navigate('/payments', { state: { billId: bill.id } })}>
-                          <i className="bi bi-cash"></i>
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
+                {/* Data Table */}
+                {loading ? (
+                    <div className="text-center p-5">Loading bills...</div>
+                ) : (
+                    <div className="table-responsive">
+                        <table className="table table-bordered table-striped align-middle">
+                            <thead className="table-dark">
+                                <tr>
+                                    <th>FLAT NO</th>
+                                    <th>UNITS</th>
+                                    <th>WATER CHARGES</th>
+                                    <th>PREV PENDING</th>
+                                    <th>NET DUE</th>
+                                    <th>PAID</th>
+                                    <th>BALANCE</th>
+                                    <th style={{ minWidth: '110px' }}>PAY AMOUNT</th>
+                                    <th style={{ minWidth: '110px' }}>MODE</th>
+                                    <th style={{ minWidth: '130px' }}>DATE</th>
+                                    <th style={{ minWidth: '150px' }}>REF / REMARKS</th>
+                                    <th style={{ minWidth: '110px' }}>ACTIONS</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {bills.map(bill => {
+                                    const units = getUnitsConsumed(bill);
+                                    const waterCharges = getWaterCharges(bill);
+                                    const prevPending = getPrevPending(bill);
+                                    const totalDue = getTotalDue(bill);
+                                    const amountPaid = getAmountPaid(bill);
+                                    const balance = totalDue - amountPaid;
+                                    const p = payments[bill.id] || {};
+                                    const unitNo = getUnitNumber(bill);
+
+                                    return (
+                                        <tr key={bill.id}>
+                                            <td><strong>{unitNo}</strong></td>
+                                            <td>{units}</td>
+                                            <td>₹{waterCharges}</td>
+                                            <td>₹{prevPending}</td>
+                                            <td className="fw-bold">₹{totalDue}</td>
+                                            <td className="text-success fw-bold">₹{amountPaid}</td>
+                                            <td className={balance > 0 ? "text-danger fw-bold" : "text-success fw-bold"}>
+                                                ₹{balance}
+                                            </td>
+                                            
+                                            {/* Editable Payment Inputs (ALWAYS ENABLED) */}
+                                            <td>
+                                                <input 
+                                                    type="number" 
+                                                    className="form-control form-control-sm bg-white"
+                                                    value={p.amount !== undefined ? p.amount : ''}
+                                                    onChange={e => handleInputChange(bill.id, 'amount', e.target.value)}
+                                                    placeholder="0"
+                                                />
+                                            </td>
+                                            <td>
+                                                <select 
+                                                    className="form-select form-select-sm bg-white"
+                                                    value={p.paymentMode || 'UPI'}
+                                                    onChange={e => handleInputChange(bill.id, 'paymentMode', e.target.value)}
+                                                >
+                                                    <option value="UPI">UPI</option>
+                                                    <option value="Cash">Cash</option>
+                                                    <option value="Cheque">Cheque</option>
+                                                    <option value="Bank Transfer">Bank Transfer</option>
+                                                </select>
+                                            </td>
+                                            <td>
+                                                <input 
+                                                    type="date" 
+                                                    className="form-control form-control-sm bg-white"
+                                                    value={p.paymentDate || ''}
+                                                    onChange={e => handleInputChange(bill.id, 'paymentDate', e.target.value)}
+                                                />
+                                            </td>
+                                            <td>
+                                                <input 
+                                                    type="text" 
+                                                    className="form-control form-control-sm bg-white"
+                                                    placeholder="UPI / Cheque No"
+                                                    value={p.remarks || ''}
+                                                    onChange={e => handleInputChange(bill.id, 'remarks', e.target.value)}
+                                                />
+                                            </td>
+                                            <td>
+                                                <div className="d-flex gap-1">
+                                                    <button 
+                                                        className="btn btn-sm btn-success" 
+                                                        onClick={() => saveSinglePayment(bill.id)}
+                                                    >
+                                                        Save
+                                                    </button>
+                                                    <button 
+                                                        className="btn btn-sm btn-outline-dark" 
+                                                        title="Print Receipt"
+                                                        onClick={() => handlePrintSingle(bill)}
+                                                    >
+                                                        <i className="bi bi-printer"></i>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            {/* Hidden printable receipt wrapper */}
+            <div className="d-none d-print-block">
+                <Receipt 
+                    ref={receiptRef} 
+                    payments={printData} 
+                    quarterLabel={selectedQuarter?.label} 
+                />
+            </div>
+        </div>
+    );
+}
 
 export default BillGeneration;
