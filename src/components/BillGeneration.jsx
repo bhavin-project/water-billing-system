@@ -8,12 +8,13 @@ function BillGeneration() {
     const [bills, setBills] = useState([]);
     const [payments, setPayments] = useState({});
     const [loading, setLoading] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
 
     // Print reference & state
     const receiptRef = useRef();
     const [printData, setPrintData] = useState([]);
 
-    // Helpers to extract values safely with fallback logic
+    // Helpers to extract values safely across DTO variations
     const getUnitNumber = (bill) => {
         return bill?.unit?.unitNumber || bill?.meterReading?.unit?.unitNumber || bill?.unitNumber || `Unit #${bill?.id || ''}`;
     };
@@ -23,29 +24,19 @@ function BillGeneration() {
     };
 
     const getWaterCharges = (bill) => {
-        if (bill?.waterCharges !== undefined && bill?.waterCharges !== null && bill?.waterCharges !== 0) return bill.waterCharges;
-        if (bill?.currentCharges !== undefined && bill?.currentCharges !== null && bill?.currentCharges !== 0) return bill.currentCharges;
-        if (bill?.billAmount !== undefined && bill?.billAmount !== null && bill?.billAmount !== 0) return bill.billAmount;
-        if (bill?.waterCharge !== undefined && bill?.waterCharge !== null && bill?.waterCharge !== 0) return bill.waterCharge;
-        if (bill?.amount !== undefined && bill?.amount !== null && bill?.amount !== 0) return bill.amount;
-        
-        // Fallback: calculate using units * rate (e.g. 5) if available
-        const units = getUnitsConsumed(bill);
-        return units * 5; 
+        const val = bill?.currentBillAmount ?? bill?.waterCharges ?? bill?.currentCharges ?? bill?.billAmount ?? bill?.waterCharge ?? bill?.amount;
+        if (val !== undefined && val !== null && val !== 0) return val;
+        return getUnitsConsumed(bill) * 5;
     };
 
     const getPrevPending = (bill) => {
-        return bill?.previousPending ?? bill?.prevPending ?? bill?.pendingAmount ?? bill?.previousBalance ?? bill?.meterReading?.previousPending ?? 0;
+        return bill?.previousPending ?? bill?.previousDue ?? bill?.prevPending ?? bill?.pendingAmount ?? bill?.previousBalance ?? bill?.meterReading?.previousPending ?? 0;
     };
 
     const getTotalDue = (bill) => {
-        if (bill?.totalDue !== undefined && bill?.totalDue !== null && bill?.totalDue !== 0) return bill.totalDue;
-        if (bill?.totalAmount !== undefined && bill?.totalAmount !== null && bill?.totalAmount !== 0) return bill.totalAmount;
-        if (bill?.netDue !== undefined && bill?.netDue !== null && bill?.netDue !== 0) return bill.netDue;
-        if (bill?.netAmount !== undefined && bill?.netAmount !== null && bill?.netAmount !== 0) return bill.netAmount;
-        
-        // Fallback calculation: Water Charges + Previous Pending
-        return getWaterCharges(bill) + getPrevPending(bill);
+        const val = bill?.totalPayable ?? bill?.netPayable ?? bill?.totalDue ?? bill?.totalAmount ?? bill?.netDue ?? bill?.netAmount;
+        if (val !== undefined && val !== null && val !== 0) return val;
+        return Number(getWaterCharges(bill)) + Number(getPrevPending(bill));
     };
 
     const getAmountPaid = (bill) => {
@@ -62,17 +53,7 @@ function BillGeneration() {
                     setSelectedQuarter(active);
                 }
             })
-            .catch(err => {
-                // Fallback attempt to /quarters endpoint
-                api.get('/quarters')
-                    .then(res => {
-                        if (res.data && res.data.length > 0) {
-                            setQuarters(res.data);
-                            setSelectedQuarter(res.data.find(q => !q.closed) || res.data[0]);
-                        }
-                    })
-                    .catch(e => console.error("Failed to load quarters", e));
-            });
+            .catch(err => console.error("Failed to load quarters", err));
     }, []);
 
     // 2. Fetch bills when quarter changes
@@ -88,14 +69,13 @@ function BillGeneration() {
             .then(res => {
                 const billList = res.data || [];
                 setBills(billList);
-                
-                // Initialize payment forms allowing user to edit freely
+
                 const initialForm = {};
                 billList.forEach(bill => {
                     const totalDue = getTotalDue(bill);
                     const amountPaid = getAmountPaid(bill);
                     const balance = totalDue - amountPaid;
-                    
+
                     initialForm[bill.id] = {
                         amount: balance > 0 ? balance : 0,
                         paymentMode: 'UPI',
@@ -107,6 +87,34 @@ function BillGeneration() {
             })
             .catch(err => console.error("Error loading bills", err))
             .finally(() => setLoading(false));
+    };
+
+    // 3. Generate OR Regenerate Bills for Selected Quarter
+    const handleGenerateOrRegenerate = async () => {
+        if (!selectedQuarter) return;
+        const isRegenerate = bills.length > 0;
+        const endpoint = isRegenerate
+            ? `/bills/regenerate/${selectedQuarter.id}`
+            : `/bills/generate/${selectedQuarter.id}`;
+
+        try {
+            setLoading(true);
+            await api.post(endpoint);
+            alert(
+                isRegenerate
+                    ? `Bills regenerated successfully for ${selectedQuarter.label}!`
+                    : `Bills generated successfully for ${selectedQuarter.label}!`
+            );
+            loadBills();
+        } catch (err) {
+            console.error("Generate/Regenerate bills error:", err.response?.data || err);
+            const msg =
+                err.response?.data?.message ||
+                err.response?.data?.error ||
+                err.message;
+            alert("Failed to generate bills:\n" + msg);
+            setLoading(false);
+        }
     };
 
     const handleInputChange = (billId, field, value) => {
@@ -134,8 +142,9 @@ function BillGeneration() {
             alert("Payment recorded successfully!");
             loadBills();
         } catch (err) {
-            console.error("Save payment error:", err);
-            alert("Failed to save payment.");
+            console.error("Save payment error:", err.response?.data || err);
+            const msg = err.response?.data?.message || err.message;
+            alert("Failed to save payment:\n" + msg);
         }
     };
 
@@ -164,7 +173,6 @@ function BillGeneration() {
             try {
                 await api.post('/payments/bulk', bulkPayload);
             } catch (bulkErr) {
-                // Fallback: post payments sequentially if bulk endpoint fails
                 for (let item of bulkPayload) {
                     await api.post(`/payments/bill/${item.billId}`, item.payment);
                 }
@@ -177,7 +185,7 @@ function BillGeneration() {
         }
     };
 
-    // Print receipt for individual unit
+    // Print single unit receipt
     const handlePrintSingle = async (bill) => {
         try {
             const res = await api.get(`/payments/bill/${bill.id}`);
@@ -187,20 +195,7 @@ function BillGeneration() {
                 setPrintData([{ ...latestPayment, bill: bill }]);
                 setTimeout(() => window.print(), 300);
             } else {
-                const p = payments[bill.id];
-                if (p && parseFloat(p.amount) > 0) {
-                    setPrintData([{
-                        amount: parseFloat(p.amount),
-                        paymentMode: p.paymentMode,
-                        paymentDate: p.paymentDate,
-                        remarks: p.remarks,
-                        receiptNumber: 'PENDING',
-                        bill: bill
-                    }]);
-                    setTimeout(() => window.print(), 300);
-                } else {
-                    alert("No payments recorded yet for " + getUnitNumber(bill));
-                }
+                alert("No saved payment found yet for " + getUnitNumber(bill) + ". Please save payment first.");
             }
         } catch (err) {
             console.error("Print fetch error", err);
@@ -219,7 +214,7 @@ function BillGeneration() {
                         allPayments.push({ ...latest, bill: bill });
                     }
                 } catch (e) {
-                    // Ignore single bill fetch errors
+                    // Skip bills without payments
                 }
             }
 
@@ -234,17 +229,21 @@ function BillGeneration() {
         }
     };
 
+    const filteredBills = bills.filter(bill =>
+        getUnitNumber(bill).toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
     return (
         <div className="container-fluid mt-3">
             <div className="d-print-none">
                 <h2>Bill Generation & Payment Collection</h2>
 
-                {/* Quarter Selection Header */}
+                {/* Quarter Selection & Actions Header */}
                 <div className="card p-3 my-3 shadow-sm">
-                    <div className="row align-items-end">
-                        <div className="col-md-4">
+                    <div className="row g-3 align-items-end">
+                        <div className="col-md-3">
                             <label className="form-label fw-bold">Select Quarter</label>
-                            <select 
+                            <select
                                 className="form-select"
                                 value={selectedQuarter?.id || ''}
                                 onChange={e => setSelectedQuarter(quarters.find(q => q.id === parseInt(e.target.value)))}
@@ -254,20 +253,68 @@ function BillGeneration() {
                                 ))}
                             </select>
                         </div>
-                        <div className="col-md-8 text-end mt-3 mt-md-0">
-                            <button className="btn btn-primary me-2" onClick={saveAllPayments}>
-                                <i className="bi bi-check-all"></i> Save All Payments
+
+                        <div className="col-md-3">
+                            <label className="form-label fw-bold">Search Flat</label>
+                            <input
+                                type="text"
+                                className="form-control"
+                                placeholder="e.g. A-101 or B-"
+                                value={searchTerm}
+                                onChange={e => setSearchTerm(e.target.value)}
+                            />
+                        </div>
+
+                        <div className="col-md-6 text-md-end d-flex flex-wrap justify-content-md-end gap-2">
+                            {/* Generate OR Regenerate Bills Button */}
+                            <button
+                                className={`btn ${bills.length === 0 ? 'btn-success' : 'btn-warning'}`}
+                                onClick={handleGenerateOrRegenerate}
+                                disabled={!selectedQuarter || loading}
+                            >
+                                <i className={`bi ${bills.length === 0 ? 'bi-lightning-charge-fill' : 'bi-arrow-clockwise'} me-1`}></i>
+                                {bills.length === 0 ? 'Generate Bills' : 'Regenerate Bills'}
                             </button>
-                            <button className="btn btn-dark" onClick={handlePrintAll}>
-                                <i className="bi bi-printer"></i> Print All Receipts
+
+                            <button
+                                className="btn btn-primary"
+                                onClick={saveAllPayments}
+                                disabled={bills.length === 0}
+                            >
+                                <i className="bi bi-check-all me-1"></i> Save All Payments
+                            </button>
+
+                            <button
+                                className="btn btn-dark"
+                                onClick={handlePrintAll}
+                                disabled={bills.length === 0}
+                            >
+                                <i className="bi bi-printer me-1"></i> Print All Receipts
                             </button>
                         </div>
                     </div>
                 </div>
 
-                {/* Data Table */}
+                {/* Empty State OR Bills Table */}
                 {loading ? (
-                    <div className="text-center p-5">Loading bills...</div>
+                    <div className="text-center p-5">
+                        <div className="spinner-border text-primary me-2"></div>
+                        Loading bills...
+                    </div>
+                ) : bills.length === 0 ? (
+                    <div className="card p-5 text-center shadow-sm bg-light">
+                        <i className="bi bi-receipt-cutoff fs-1 text-secondary mb-2"></i>
+                        <h4>No Bills Generated Yet for {selectedQuarter?.label}</h4>
+                        <p className="text-muted mb-3">
+                            Once you have entered and saved meter readings in the <strong>Meter Readings</strong> tab, click below to generate bills for all units.
+                        </p>
+                        <div>
+                            <button className="btn btn-success btn-lg px-4" onClick={handleGenerateOrRegenerate}>
+                                <i className="bi bi-lightning-charge-fill me-2"></i>
+                                Generate Bills Now
+                            </button>
+                        </div>
+                    </div>
                 ) : (
                     <div className="table-responsive">
                         <table className="table table-bordered table-striped align-middle">
@@ -288,7 +335,7 @@ function BillGeneration() {
                                 </tr>
                             </thead>
                             <tbody>
-                                {bills.map(bill => {
+                                {filteredBills.map(bill => {
                                     const units = getUnitsConsumed(bill);
                                     const waterCharges = getWaterCharges(bill);
                                     const prevPending = getPrevPending(bill);
@@ -309,11 +356,10 @@ function BillGeneration() {
                                             <td className={balance > 0 ? "text-danger fw-bold" : "text-success fw-bold"}>
                                                 ₹{balance}
                                             </td>
-                                            
-                                            {/* Editable Payment Inputs (ALWAYS ENABLED) */}
+
                                             <td>
-                                                <input 
-                                                    type="number" 
+                                                <input
+                                                    type="number"
                                                     className="form-control form-control-sm bg-white"
                                                     value={p.amount !== undefined ? p.amount : ''}
                                                     onChange={e => handleInputChange(bill.id, 'amount', e.target.value)}
@@ -321,7 +367,7 @@ function BillGeneration() {
                                                 />
                                             </td>
                                             <td>
-                                                <select 
+                                                <select
                                                     className="form-select form-select-sm bg-white"
                                                     value={p.paymentMode || 'UPI'}
                                                     onChange={e => handleInputChange(bill.id, 'paymentMode', e.target.value)}
@@ -333,16 +379,16 @@ function BillGeneration() {
                                                 </select>
                                             </td>
                                             <td>
-                                                <input 
-                                                    type="date" 
+                                                <input
+                                                    type="date"
                                                     className="form-control form-control-sm bg-white"
                                                     value={p.paymentDate || ''}
                                                     onChange={e => handleInputChange(bill.id, 'paymentDate', e.target.value)}
                                                 />
                                             </td>
                                             <td>
-                                                <input 
-                                                    type="text" 
+                                                <input
+                                                    type="text"
                                                     className="form-control form-control-sm bg-white"
                                                     placeholder="UPI / Cheque No"
                                                     value={p.remarks || ''}
@@ -351,14 +397,14 @@ function BillGeneration() {
                                             </td>
                                             <td>
                                                 <div className="d-flex gap-1">
-                                                    <button 
-                                                        className="btn btn-sm btn-success" 
+                                                    <button
+                                                        className="btn btn-sm btn-success"
                                                         onClick={() => saveSinglePayment(bill.id)}
                                                     >
                                                         Save
                                                     </button>
-                                                    <button 
-                                                        className="btn btn-sm btn-outline-dark" 
+                                                    <button
+                                                        className="btn btn-sm btn-outline-dark"
                                                         title="Print Receipt"
                                                         onClick={() => handlePrintSingle(bill)}
                                                     >
@@ -377,10 +423,10 @@ function BillGeneration() {
 
             {/* Hidden printable receipt wrapper */}
             <div className="d-none d-print-block">
-                <Receipt 
-                    ref={receiptRef} 
-                    payments={printData} 
-                    quarterLabel={selectedQuarter?.label} 
+                <Receipt
+                    ref={receiptRef}
+                    payments={printData}
+                    quarterLabel={selectedQuarter?.label}
                 />
             </div>
         </div>
