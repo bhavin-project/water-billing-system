@@ -3,6 +3,7 @@ export const formatCurrency = (amount) => {
   return `₹${parseFloat(amount).toFixed(2)}`;
 };
 
+
 export const formatDate = (date) => {
   if (!date) return '-';
   return new Date(date).toLocaleDateString('en-IN');

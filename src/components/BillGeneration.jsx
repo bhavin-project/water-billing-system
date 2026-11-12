@@ -15,7 +15,7 @@ function BillGeneration() {
     const [printData, setPrintData] = useState([]);
 
     // Helpers to extract values safely across DTO variations
-    const getUnitNumber = (bill) => {
+  /*  const getUnitNumber = (bill) => {
         return bill?.unit?.unitNumber || bill?.meterReading?.unit?.unitNumber || bill?.unitNumber || `Unit #${bill?.id || ''}`;
     };
 
@@ -41,7 +41,45 @@ function BillGeneration() {
 
     const getAmountPaid = (bill) => {
         return bill?.amountPaid ?? bill?.paidAmount ?? bill?.paid ?? 0;
-    };
+    }; */
+
+    // --- EXACT FINANCIAL CALCULATIONS ---
+const getUnitNumber = (bill) => {
+    return bill?.unit?.unitNumber || bill?.meterReading?.unit?.unitNumber || bill?.unitNumber || `Unit #${bill?.id || ''}`;
+};
+
+const getUnitsConsumed = (bill) => {
+    return Number(bill?.unitsConsumed ?? bill?.meterReading?.unitsConsumed ?? 0);
+};
+
+const getWaterCharges = (bill) => {
+    const val = bill?.waterCharges ?? bill?.currentBillAmount ?? bill?.currentCharges ?? bill?.billAmount ?? bill?.waterCharge;
+    if (val !== undefined && val !== null) return Number(val);
+    return getUnitsConsumed(bill) * 5; // fallback rate calculation
+};
+
+const getPrevPending = (bill) => {
+  return Number(
+    bill?.previousBalance ??
+    bill?.previousPending ??
+    bill?.prevPending ??
+    bill?.pendingAmount ??
+    bill?.meterReading?.previousPending ??
+    0
+  );
+};
+
+// NET DUE = WATER CHARGES + PREVIOUS PENDING (Guarantees previous pending is included!)
+const getTotalDue = (bill) => {
+    const wc = getWaterCharges(bill);
+    const pp = getPrevPending(bill);
+    console.log("Total Due for bill", wc, pp, wc + pp);
+    return wc + pp;
+};
+
+const getAmountPaid = (bill) => {
+    return Number(bill?.amountPaid ?? bill?.paidAmount ?? bill?.paid ?? 0);
+};
 
     // 1. Fetch quarters
     useEffect(() => {
@@ -336,85 +374,122 @@ function BillGeneration() {
                             </thead>
                             <tbody>
                                 {filteredBills.map(bill => {
-                                    const units = getUnitsConsumed(bill);
-                                    const waterCharges = getWaterCharges(bill);
-                                    const prevPending = getPrevPending(bill);
-                                    const totalDue = getTotalDue(bill);
-                                    const amountPaid = getAmountPaid(bill);
-                                    const balance = totalDue - amountPaid;
-                                    const p = payments[bill.id] || {};
-                                    const unitNo = getUnitNumber(bill);
+    const units = getUnitsConsumed(bill);
+    const waterCharges = getWaterCharges(bill);
+    const prevPending = getPrevPending(bill);
+    
+    // Net Due = Water Charges + Prev Pending
+    // const totalDue = getTotalDue(bill);
+    const totalDue = Number(
+  bill?.totalAmount ??
+  bill?.totalDue ??
+  (waterCharges + prevPending)
+);
+    
+    const amountPaid = getAmountPaid(bill);
+    
+    // Balance = Net Due - Amount Paid
+    const balance = totalDue - amountPaid;
+    
+    const p = payments[bill.id] || {};
+    const unitNo = getUnitNumber(bill);
 
-                                    return (
-                                        <tr key={bill.id}>
-                                            <td><strong>{unitNo}</strong></td>
-                                            <td>{units}</td>
-                                            <td>₹{waterCharges}</td>
-                                            <td>₹{prevPending}</td>
-                                            <td className="fw-bold">₹{totalDue}</td>
-                                            <td className="text-success fw-bold">₹{amountPaid}</td>
-                                            <td className={balance > 0 ? "text-danger fw-bold" : "text-success fw-bold"}>
-                                                ₹{balance}
-                                            </td>
+    return (
+        <tr key={bill.id}>
+            <td><strong>{unitNo}</strong></td>
+            <td>{units}</td>
+            <td>₹{waterCharges.toFixed(2)}</td>
+            
+            {/* PREV PENDING — shows previous pending balance (+due / -credit) */}
+<td className={`${prevPending < 0 ? 'text-success fw-bold' : prevPending > 0 ? 'text-danger fw-bold' : ''}`}>
+    {prevPending < 0 ? `-₹${Math.abs(prevPending).toFixed(2)}` : `₹${prevPending.toFixed(2)}`}
+    {prevPending < 0 ? <span className="badge bg-success ms-1" style={{fontSize:'0.7em'}}>Credit</span> : null}
+    {prevPending > 0 ? <span className="badge bg-danger ms-1" style={{fontSize:'0.7em'}}>Due</span> : null}
+</td>
+            
+            {/* NET DUE COLUMN (Water Charges + Prev Pending) */}
+            <td className="fw-bold fs-6">
+                ₹{totalDue.toFixed(2)}
+            </td>
+            
+            {/* AMOUNT PAID */}
+            <td className="text-success fw-bold">
+                ₹{amountPaid.toFixed(2)}
+            </td>
+            
+            {/* BALANCE COLUMN (+Due / -Credit) */}
+            <td className={`fw-bold fs-6 ${
+                balance > 0 ? 'text-danger' : 
+                balance < 0 ? 'text-success' : 'text-muted'
+            }`}>
+                {balance < 0 ? `-₹${Math.abs(balance).toFixed(2)}` : `₹${balance.toFixed(2)}`}
+                {balance < 0 && <small className="d-block text-success">(Credit)</small>}
+                {balance > 0 && balance !== totalDue && <small className="d-block text-danger">(Partial Due)</small>}
+            </td>
 
-                                            <td>
-                                                <input
-                                                    type="number"
-                                                    className="form-control form-control-sm bg-white"
-                                                    value={p.amount !== undefined ? p.amount : ''}
-                                                    onChange={e => handleInputChange(bill.id, 'amount', e.target.value)}
-                                                    placeholder="0"
-                                                />
-                                            </td>
-                                            <td>
-                                                <select
-                                                    className="form-select form-select-sm bg-white"
-                                                    value={p.paymentMode || 'UPI'}
-                                                    onChange={e => handleInputChange(bill.id, 'paymentMode', e.target.value)}
-                                                >
-                                                    <option value="UPI">UPI</option>
-                                                    <option value="Cash">Cash</option>
-                                                    <option value="Cheque">Cheque</option>
-                                                    <option value="Bank Transfer">Bank Transfer</option>
-                                                </select>
-                                            </td>
-                                            <td>
-                                                <input
-                                                    type="date"
-                                                    className="form-control form-control-sm bg-white"
-                                                    value={p.paymentDate || ''}
-                                                    onChange={e => handleInputChange(bill.id, 'paymentDate', e.target.value)}
-                                                />
-                                            </td>
-                                            <td>
-                                                <input
-                                                    type="text"
-                                                    className="form-control form-control-sm bg-white"
-                                                    placeholder="UPI / Cheque No"
-                                                    value={p.remarks || ''}
-                                                    onChange={e => handleInputChange(bill.id, 'remarks', e.target.value)}
-                                                />
-                                            </td>
-                                            <td>
-                                                <div className="d-flex gap-1">
-                                                    <button
-                                                        className="btn btn-sm btn-success"
-                                                        onClick={() => saveSinglePayment(bill.id)}
-                                                    >
-                                                        Save
-                                                    </button>
-                                                    <button
-                                                        className="btn btn-sm btn-outline-dark"
-                                                        title="Print Receipt"
-                                                        onClick={() => handlePrintSingle(bill)}
-                                                    >
-                                                        <i className="bi bi-printer"></i>
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
+            {/* Editable Pay Amount (Defaults to remaining balance if > 0) */}
+            <td>
+                <input
+                    type="number"
+                    className="form-control form-control-sm bg-white text-center fw-bold"
+                    value={p.amount !== undefined ? p.amount : ''}
+                    onChange={e => handleInputChange(bill.id, 'amount', e.target.value)}
+                    placeholder="0"
+                />
+            </td>
+            
+            <td>
+                <select
+                    className="form-select form-select-sm bg-white"
+                    value={p.paymentMode || 'UPI'}
+                    onChange={e => handleInputChange(bill.id, 'paymentMode', e.target.value)}
+                >
+                    <option value="UPI">UPI</option>
+                    <option value="Cash">Cash</option>
+                    <option value="Cheque">Cheque</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                </select>
+            </td>
+            
+            <td>
+                <input
+                    type="date"
+                    className="form-control form-control-sm bg-white"
+                    value={p.paymentDate || ''}
+                    onChange={e => handleInputChange(bill.id, 'paymentDate', e.target.value)}
+                />
+            </td>
+            
+            <td>
+                <input
+                    type="text"
+                    className="form-control form-control-sm bg-white"
+                    placeholder="UPI / Cheque No"
+                    value={p.remarks || ''}
+                    onChange={e => handleInputChange(bill.id, 'remarks', e.target.value)}
+                />
+            </td>
+            
+            <td>
+                <div className="d-flex gap-1">
+                    <button
+                        className="btn btn-sm btn-success"
+                        onClick={() => saveSinglePayment(bill.id)}
+                    >
+                        Save
+                    </button>
+                    <button
+                        className="btn btn-sm btn-outline-dark"
+                        title="Print Receipt"
+                        onClick={() => handlePrintSingle(bill)}
+                    >
+                        <i className="bi bi-printer"></i>
+                    </button>
+                </div>
+            </td>
+        </tr>
+    );
+})}
                             </tbody>
                         </table>
                     </div>
@@ -434,3 +509,5 @@ function BillGeneration() {
 }
 
 export default BillGeneration;
+
+

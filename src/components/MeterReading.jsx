@@ -450,14 +450,30 @@ const MeterReading = () => {
                       {formatCurrency(r.amountPaid)}
                     </td>
 
-                    {/* Balance: +ve = Due, -ve = Credit */}
-                    <td className={`text-center fw-bold fs-6 ${
-                      parseFloat(r.balance) > 0 ? 'text-danger' :
-                      parseFloat(r.balance) < 0 ? 'text-success' : 'text-muted'
-                    }`}>
-                      {formatCurrency(r.balance)}
-                      {parseFloat(r.balance) < 0 && <><br /><small className="text-success">(Credit)</small></>}
-                    </td>
+                    {/* BALANCE = Net Due - Paid  |  +Due / -Credit */}
+<td className={`text-center fw-bold fs-6 ${
+  parseFloat(r.balance) > 0 ? 'text-danger' :
+  parseFloat(r.balance) < 0 ? 'text-success' : 'text-muted'
+}`}>
+  {parseFloat(r.balance) < 0
+    ? `-₹${Math.abs(parseFloat(r.balance)).toFixed(2)}`
+    : `₹${parseFloat(r.balance).toFixed(2)}`}
+  
+  {parseFloat(r.balance) > 0 && (
+    <>
+      <br />
+      <small className="text-danger">(Due)</small>
+    </>
+  )}
+  
+  {parseFloat(r.balance) < 0 && (
+    <>
+      <br />
+      <small className="text-success">(Credit)</small>
+    </>
+  )}
+</td>
+
 
                     {/* Status */}
                     <td className="text-center">
